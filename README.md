@@ -189,21 +189,21 @@ Before moving to real-robot experiments, we **strongly recommend** the following
 ### Recommended Setup
 
 - **Develop your real-robot API on top of this repo.** Porting A2A to a different codebase tends to introduce subtle bugs (action normalization, observation alignment, history buffering). Staying within this repo and adding a real-robot interface is the path of least resistance.
-- **Robot arm: Franka is recommended.** We have thoroughly validated A2A on Franka and the integration is essentially plug-and-play. Other arms are supported in principle, but expect some debugging effort around control interface and action space differences.
+- **Robot arm: Franka is recommended.** We have thoroughly validated A2A on Franka and the integration is essentially plug-and-play. Other arms are supported in principle, but expect some debugging effort around the control interface and others.
 
 ### Key Implementation Notes
 
-- **Prefer continuous action signals.** A2A is grounded in the physical continuity of actions, which makes it most effective for tasks dominated by smooth, continuous control signals. For discrete or switch-like action dimensions (e.g., binary gripper open/close commands), this continuity prior provides limited benefit — consider handling such dimensions with a separate head or post-processing.
+- **Prefer continuous action signals.** A2A is grounded in the physical continuity of actions, which makes it most effective for tasks dominated by smooth, continuous control signals. For discrete or switch-like action dimensions (e.g., binary gripper open/close commands), this continuity prior provides limited benefit. Consider handling such dimensions with a separate head or post-processing.
 
 - **Use *executed* actions as the flow source, not commanded actions.**
 
   > To enhance closed-loop robustness, the flow source should be the history of **executed** actions inferred from proprioceptive feedback, rather than the actions previously commanded by the policy. This accounts for imperfect low-level tracking and prevents compounding errors at deployment time.
 
-- **Add small Gaussian noise to history actions during training.** This improves robustness and preserves multi-modality of the learned distribution. We recommend a standard deviation of **0.02** as a good default — see the `a2a_noise` variant.
+- **Add small Gaussian noise to history actions during training.** This improves robustness and preserves multi-modality of the learned distribution. We recommend a standard deviation of **0.02** as a good default.
 
 ### Troubleshooting
 
-Real-robot deployment inevitably surfaces setup-specific issues (calibration, latency, action scaling, gripper timing, etc.). Don't be discouraged if the first few rollouts behave unexpectedly — iterate, log proprioceptive feedback, and compare against your simulation runs. Feel free to open an issue if you run into problems we can help with.
+Real-robot deployment inevitably surfaces setup-specific issues. Don't be discouraged if the first few rollouts behave unexpectedly — iterate, log proprioceptive feedback, and compare against your simulation runs. Feel free to open an issue if you run into problems we can help with.
 
 ## License
 
@@ -218,9 +218,13 @@ This project is built on top of [RoboVerse](https://github.com/RoboVerseOrg/Robo
 If you find A2A useful in your research, please consider citing:
 
 ```bibtex
-@misc{a2a2025,
-    title={A2A: Action-to-Action Flow Matching Policy},
-    year={2025},
+@inproceedings{a2a2026,
+    author={Jia, Jindou and Li, Gen and Chen, Xiangyu and An, Tuo and Hu, Yuxuan and Li, Jingliang and Guo, Xinying and Yang, Jianfei},
+    title     = {{A2A: Action-to-Action Flow Matching Policy}},
+    booktitle = {Proceedings of Robotics: Science and Systems},
+    year      = {2026},
+    address   = {Sydney, Australia},
+    month     = {July}
 }
 ```
 

@@ -175,6 +175,36 @@ The following tasks from RoboVerse are supported:
 
 Please refer to [RoboVerse Documentation](https://roboverse.wiki/) for the complete list of available tasks.
 
+## Real-Robot Deployment
+
+Deploying A2A on a real robot involves additional considerations beyond simulation. The following notes summarize practices we have validated and recommend for a smooth real-world setup.
+
+### Prerequisites
+
+Before moving to real-robot experiments, we **strongly recommend** the following progression:
+
+1. **Reproduce simulation results first.** Make sure you can reproduce A2A's advantage over baselines reported in the paper within simulation. This validates your training pipeline and gives you a reference point for debugging real-world issues.
+2. **Get Diffusion Policy working on the real robot before A2A.** DP serves as a sanity check for your data collection, observation pipeline, and low-level controller. Once DP runs reliably, switching to A2A is straightforward.
+
+### Recommended Setup
+
+- **Develop your real-robot API on top of this repo.** Porting A2A to a different codebase tends to introduce subtle bugs (action normalization, observation alignment, history buffering). Staying within this repo and adding a real-robot interface is the path of least resistance.
+- **Robot arm: Franka is recommended.** We have thoroughly validated A2A on Franka and the integration is essentially plug-and-play. Other arms are supported in principle, but expect some debugging effort around control interface and action space differences.
+
+### Key Implementation Notes
+
+- **Prefer continuous action signals.** A2A is grounded in the physical continuity of actions, which makes it most effective for tasks dominated by smooth, continuous control signals. For discrete or switch-like action dimensions (e.g., binary gripper open/close commands), this continuity prior provides limited benefit — consider handling such dimensions with a separate head or post-processing.
+
+- **Use *executed* actions as the flow source, not commanded actions.**
+
+  > To enhance closed-loop robustness, the flow source should be the history of **executed** actions inferred from proprioceptive feedback, rather than the actions previously commanded by the policy. This accounts for imperfect low-level tracking and prevents compounding errors at deployment time.
+
+- **Add small Gaussian noise to history actions during training.** This improves robustness and preserves multi-modality of the learned distribution. We recommend a standard deviation of **0.02** as a good default — see the `a2a_noise` variant.
+
+### Troubleshooting
+
+Real-robot deployment inevitably surfaces setup-specific issues (calibration, latency, action scaling, gripper timing, etc.). Don't be discouraged if the first few rollouts behave unexpectedly — iterate, log proprioceptive feedback, and compare against your simulation runs. Feel free to open an issue if you run into problems we can help with.
+
 ## License
 
 This project is licensed under the Apache License 2.0.

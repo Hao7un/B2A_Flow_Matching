@@ -8,7 +8,8 @@ A2A is a flow matching policy that directly transforms history action distributi
 
 ## Overview
 
-A2A (Action-to-Action) uses flow matching to learn a transformation from history states to future actions, enabling efficient and robust imitation learning for robotic manipulation tasks.
+A2A (Action-to-Action) uses flow matching to learn a transformation from history states to future actions, enabling efficient and robust imitation learning for robotic manipulation tasks. 
+Paper link: https://arxiv.org/pdf/2602.07322
 
 
 ### Architecture

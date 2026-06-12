@@ -54,6 +54,7 @@ class B2AImagePolicy(BaseImagePolicy):
         belief_w2_weight=0.05,
         belief_entropy_weight=0.01,
         source_dropout_prob=0.1,
+        source_noise_std=0.0,
         detach_source_for_flow=True,
         deterministic_eval=True,
         belief_history_dominance_weight=0.0,
@@ -137,6 +138,7 @@ class B2AImagePolicy(BaseImagePolicy):
         self.belief_w2_weight = belief_w2_weight
         self.belief_entropy_weight = belief_entropy_weight
         self.source_dropout_prob = source_dropout_prob
+        self.source_noise_std = source_noise_std
         self.detach_source_for_flow = detach_source_for_flow
         self.deterministic_eval = deterministic_eval
         self.belief_history_dominance_weight = belief_history_dominance_weight
@@ -262,6 +264,15 @@ class B2AImagePolicy(BaseImagePolicy):
             belief_start = torch.where(drop_mask, history_latents, belief_start)
 
         start_for_flow = belief_start.detach() if self.detach_source_for_flow else belief_start
+
+        # Decoupled flow-source noise. Must stay identical to the noise applied in
+        # predict_action: the velocity field is only valid on the source
+        # distribution it was trained on. Scale is set wider than the belief's
+        # learned std so the flow learns corrections at the magnitude of
+        # eval-time belief errors, keeping the source-target coupling
+        # non-degenerate even when the belief mean fits the target.
+        if self.source_noise_std > 0:
+            start_for_flow = start_for_flow + self.source_noise_std * torch.randn_like(start_for_flow)
 
         flow_loss, _ = self.flow_matcher.compute_loss(
             self.flow_net,
@@ -415,6 +426,9 @@ class B2AImagePolicy(BaseImagePolicy):
             obs_latents=obs_latents,
             deterministic=self.deterministic_eval,
         )
+
+        if self.source_noise_std > 0:
+            belief_start = belief_start + self.source_noise_std * torch.randn_like(belief_start)
 
         action_latents_pred = self.flow_matcher.sample(
             self.flow_net,

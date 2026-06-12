@@ -10,6 +10,8 @@ set -euo pipefail
 #   - a2a_noise_0p02: A2A-Noise with history_noise_std=0.02
 #   - b2a_v0:         B2A amortized belief source
 #   - b2a_v1:         B2A recursive belief source
+#   - kalman_b2a_v2:  Kalman-B2A + decoupled source noise (0.1, train & eval),
+#                     stochastic eval, no W2 sigma penalty
 #
 # Default benchmark grid:
 #   models       : kalman_b2a
@@ -163,6 +165,7 @@ method_policy() {
     b2a_v0) echo "b2a" ;;
     b2a_v1) echo "b2a_recursive" ;;
     kalman_b2a) echo "kalman_b2a" ;;
+    kalman_b2a_v2) echo "kalman_b2a_v2" ;;
     *) echo "Unknown method: $1" >&2; return 1 ;;
   esac
 }
@@ -172,7 +175,7 @@ method_overrides() {
     a2a_noise_0p02)
       echo "policy_config.history_noise_std=0.02"
       ;;
-    b2a_v0|b2a_v1|kalman_b2a)
+    b2a_v0|b2a_v1|kalman_b2a|kalman_b2a_v2)
       ;;
     *) echo "Unknown method: $1" >&2; return 1 ;;
   esac

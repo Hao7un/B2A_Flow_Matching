@@ -1,0 +1,23 @@
+# Kalman B2A v2: non-degenerate coupling + train/test-consistent stochastic source.
+#
+# Fixes from the failure analysis (refine-logs/B2A_FAILURE_ANALYSIS_AND_DIRECTIONS.md):
+#   M1 (degenerate coupling, flow learns zero net transport):
+#       source_noise_std adds flow-source noise DECOUPLED from the belief's
+#       learned std, so the velocity field trains on corrections at the scale
+#       of eval-time belief errors. 0.1 matches the robustness noise scale the
+#       A2A paper found necessary (Sec. 4.3.2); sweep {0.05, 0.1, 0.2} later.
+#   M2 (train/test source mismatch):
+#       deterministic_eval=false samples the belief at inference exactly as in
+#       training; the same source noise is applied in predict_action.
+#   Belief variance collapse to the clamp floor:
+#       belief_w2_weight=0 removes the sigma^2 penalty (||mu-target||^2 + std^2)
+#       that squashed std onto min_log_std. NLL alone remains as the proper
+#       scoring rule training the belief mean and an honest variance.
+
+defaults:
+  - kalman_b2a
+  - _self_
+
+belief_w2_weight: 0.0
+deterministic_eval: false
+source_noise_std: 0.1

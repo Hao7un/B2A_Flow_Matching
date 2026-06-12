@@ -71,5 +71,6 @@ checkpoint:
     k: 5
     format_str: 'epoch={epoch:04d}-test_mean_score={test_mean_score:.3f}.ckpt'
   save_last_ckpt: True
+  keep_last_ckpt_only: True
   save_last_snapshot: False
   save_root_dir: ./il_outputs/${policy_name}/${task_name}

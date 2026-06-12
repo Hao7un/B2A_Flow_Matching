@@ -1,0 +1,77 @@
+# Belief-to-Action Flow Matching Policy (B2A)
+# Flow from a learned belief source to future actions, conditioned on visual observations
+
+_target_: roboverse_learn.il.policies.a2a.b2a_policy.B2AImagePolicy
+
+
+shape_meta: ${shape_meta}
+
+obs_encoder:
+  _target_: roboverse_learn.il.utils.vision.multi_image_obs_encoder.MultiImageObsEncoder
+  shape_meta: ${shape_meta}
+  rgb_model:
+    _target_: roboverse_learn.il.utils.vision.model_getter.get_resnet
+    name: resnet18
+    weights: null
+  resize_shape: null
+  crop_shape: null
+  # constant center crop
+  random_crop: True
+  use_group_norm: True
+  share_rgb_model: False
+  imagenet_norm: True
+
+horizon: ${horizon}
+n_action_steps: ${eval:'${n_action_steps}+${n_latency_steps}'}
+n_obs_steps: ${n_obs_steps}
+
+# A2A-compatible parameters
+decode_flow_latents: true
+consistency_weight: 1
+enc_contrastive_weight: 0.0
+flow_contrastive_weight: 0.0
+latent_dim: 512
+
+# B2A belief-source parameters
+belief_hidden_dim: 512
+belief_use_prev_latent: false
+belief_min_log_std: -3.5
+belief_max_log_std: 0.0
+belief_entropy_floor: 0.03
+belief_nll_weight: 0.02
+belief_w2_weight: 0.05
+belief_entropy_weight: 0.05
+source_dropout_prob: 0.1
+detach_source_for_flow: true
+deterministic_eval: true
+
+# Flow matcher parameters
+flow_matcher:
+  _target_: roboverse_learn.il.utils.flow.flow_matchers.ConditionalFlowMatcher
+  sigma: 0.0
+  num_sampling_steps: 6
+
+# Flow network parameters
+flow_net:
+  hidden_dim: 512
+  num_layers: 4
+  mlp_ratio: 4
+  dropout: 0.0
+
+# Action autoencoder parameters
+action_ae:
+  kl_weight: 1e-6
+  enc_recon_weight: 0.5
+  flow_recon_weight: 0.5
+  recon_loss_type: l1
+  use_variational: true
+  freeze_encoder: false
+  freeze_decoder: false
+  net:
+    enc_hidden_dim: 512
+    dec_hidden_dim: 512
+    latent_dim: 512
+    num_heads: 8
+    mlp_ratio: 4
+    dropout: 0.0
+    num_layers: 4

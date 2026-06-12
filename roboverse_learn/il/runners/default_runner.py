@@ -1,5 +1,6 @@
 import copy
 import datetime
+import math
 import os
 import pathlib
 import random
@@ -114,7 +115,7 @@ def _validate_state_correctness(current_state, expected_state):
 
 
 class DefaultRunner(BaseRunner):
-    include_keys = ["global_step", "epoch"]
+    include_keys = ["global_step", "epoch", "optimizer_step"]
 
     def __init__(self, cfg: OmegaConf, output_dir=None):
         super().__init__(cfg, output_dir=output_dir)
@@ -140,9 +141,25 @@ class DefaultRunner(BaseRunner):
 
         # configure training state
         self.global_step = 0
+        self.optimizer_step = 0
         self.epoch = 0
 
         self.eval_args = hydra.utils.instantiate(cfg.eval_config.eval_args)
+
+    @staticmethod
+    def _get_last_metrics(model, prefix=None):
+        metrics = getattr(model, "last_metrics", None)
+        if not metrics:
+            return {}
+
+        result = {}
+        for key, value in metrics.items():
+            if torch.is_tensor(value):
+                value = value.detach().item()
+            if isinstance(value, (int, float, np.integer, np.floating)):
+                metric_key = f"{prefix}_{key}" if prefix else key
+                result[metric_key] = float(value)
+        return result
 
     def train(self):
         cfg = copy.deepcopy(self.cfg)
@@ -150,9 +167,17 @@ class DefaultRunner(BaseRunner):
         # resume training
         if cfg.train_config.training_params.resume:
             lastest_ckpt_path = self.get_checkpoint_path()
-            if lastest_ckpt_path.is_file():
-                print(f"Resuming from checkpoint {lastest_ckpt_path}")
-                self.load_checkpoint(path=lastest_ckpt_path)
+            if lastest_ckpt_path is None:
+                print("Resume requested but no checkpoint found; starting from scratch.")
+            elif lastest_ckpt_path.is_file():
+                try:
+                    print(f"Resuming from checkpoint {lastest_ckpt_path}")
+                    self.load_checkpoint(path=lastest_ckpt_path)
+                except Exception as exc:
+                    print(
+                        f"Warning: failed to load checkpoint {lastest_ckpt_path}: {exc}. "
+                        "Starting from scratch."
+                    )
 
         # configure dataset
         dataset = hydra.utils.instantiate(cfg.dataset_config)
@@ -169,18 +194,47 @@ class DefaultRunner(BaseRunner):
         if cfg.train_config.training_params.use_ema:
             self.ema_model.set_normalizer(normalizer)
 
+        if cfg.train_config.training_params.debug:
+            cfg.train_config.training_params.num_epochs = 2
+            cfg.train_config.training_params.max_train_steps = 3
+            cfg.train_config.training_params.max_val_steps = 3
+            cfg.train_config.training_params.rollout_every = 1
+            cfg.train_config.training_params.checkpoint_every = 1
+            cfg.train_config.training_params.val_every = 1
+            cfg.train_config.training_params.sample_every = 1
+
+        grad_accum = cfg.train_config.training_params.gradient_accumulate_every
+        if grad_accum < 1:
+            raise ValueError(f"gradient_accumulate_every must be >= 1, got {grad_accum}")
+
+        max_train_steps = cfg.train_config.training_params.max_train_steps
+        train_batches_per_epoch = len(train_dataloader)
+        if max_train_steps is not None:
+            train_batches_per_epoch = min(train_batches_per_epoch, max_train_steps)
+        if train_batches_per_epoch < 1:
+            raise ValueError(
+                "No training batches available. Check dataset size, batch_size, and max_train_steps."
+            )
+        update_steps_per_epoch = math.ceil(train_batches_per_epoch / grad_accum)
+        num_training_steps = update_steps_per_epoch * cfg.train_config.training_params.num_epochs
+
+        if self.optimizer_step == 0 and self.global_step > 0:
+            completed_epochs = self.global_step // max(train_batches_per_epoch, 1)
+            remaining_batches = self.global_step % max(train_batches_per_epoch, 1)
+            self.optimizer_step = (
+                completed_epochs * update_steps_per_epoch
+                + math.ceil(remaining_batches / grad_accum)
+            )
+
         # configure lr scheduler
         lr_scheduler = get_scheduler(
             cfg.train_config.training_params.lr_scheduler,
             optimizer=self.optimizer,
             num_warmup_steps=cfg.train_config.training_params.lr_warmup_steps,
-            num_training_steps=(
-                len(train_dataloader) * cfg.train_config.training_params.num_epochs
-            )
-            // cfg.train_config.training_params.gradient_accumulate_every,
+            num_training_steps=num_training_steps,
             # pytorch assumes stepping LRScheduler every epoch
-            # however huggingface diffusers steps it every batch
-            last_epoch=self.global_step - 1,
+            # however huggingface diffusers steps it every optimizer update
+            last_epoch=self.optimizer_step - 1,
         )
 
         # configure ema
@@ -218,15 +272,6 @@ class DefaultRunner(BaseRunner):
         # save batch for sampling
         train_sampling_batch = None
 
-        if cfg.train_config.training_params.debug:
-            cfg.train_config.training_params.num_epochs = 2
-            cfg.train_config.training_params.max_train_steps = 3
-            cfg.train_config.training_params.max_val_steps = 3
-            cfg.train_config.training_params.rollout_every = 1
-            cfg.train_config.training_params.checkpoint_every = 1
-            cfg.train_config.training_params.val_every = 1
-            cfg.train_config.training_params.sample_every = 1
-
         # training loop
         log_path = os.path.join(self.output_dir, "logs.json.txt")
         with JsonLogger(log_path) as json_logger:
@@ -249,26 +294,27 @@ class DefaultRunner(BaseRunner):
                         if train_sampling_batch is None:
                             train_sampling_batch = batch
 
+                        is_last_train_step = batch_idx == (train_batches_per_epoch - 1)
+                        remainder = train_batches_per_epoch % grad_accum
+                        if remainder and batch_idx >= train_batches_per_epoch - remainder:
+                            current_accum_steps = remainder
+                        else:
+                            current_accum_steps = grad_accum
+
                         raw_loss = self.model.compute_loss(batch)
-                        loss = (
-                            raw_loss
-                            / cfg.train_config.training_params.gradient_accumulate_every
-                        )
+                        loss = raw_loss / current_accum_steps
                         loss.backward()
 
-                        # step optimizer
-                        if (
-                            self.global_step
-                            % cfg.train_config.training_params.gradient_accumulate_every
-                            == 0
-                        ):
+                        should_step_optimizer = (batch_idx + 1) % grad_accum == 0 or is_last_train_step
+                        if should_step_optimizer:
                             self.optimizer.step()
                             self.optimizer.zero_grad()
                             lr_scheduler.step()
+                            self.optimizer_step += 1
 
-                        # update ema
-                        if cfg.train_config.training_params.use_ema:
-                            ema.step(self.model)
+                            # update ema after optimizer updates, not after every micro-batch
+                            if cfg.train_config.training_params.use_ema:
+                                ema.step(self.model)
 
                         # logging
                         raw_loss_cpu = raw_loss.item()
@@ -277,12 +323,13 @@ class DefaultRunner(BaseRunner):
                         step_log = {
                             "train_loss": raw_loss_cpu,
                             "global_step": self.global_step,
+                            "optimizer_step": self.optimizer_step,
                             "epoch": self.epoch,
                             "lr": lr_scheduler.get_last_lr()[0],
                         }
+                        step_log.update(self._get_last_metrics(self.model, prefix="train"))
 
-                        is_last_batch = batch_idx == (len(train_dataloader) - 1)
-                        if not is_last_batch:
+                        if not is_last_train_step:
                             # log of last step is combined with validation and rollout
                             if wandb_run is not None:
                                 wandb_run.log(step_log, step=self.global_step)
@@ -317,6 +364,7 @@ class DefaultRunner(BaseRunner):
                 if (self.epoch % cfg.train_config.training_params.val_every) == 0:
                     with torch.no_grad():
                         val_losses = list()
+                        val_metrics = dict()
                         with tqdm.tqdm(
                             val_dataloader,
                             desc=f"Validation epoch {self.epoch}",
@@ -325,8 +373,10 @@ class DefaultRunner(BaseRunner):
                         ) as tepoch:
                             for batch_idx, batch in enumerate(tepoch):
                                 batch = dataset.postprocess(batch, device)
-                                loss = self.model.compute_loss(batch)
-                                val_losses.append(loss)
+                                loss = policy.compute_loss(batch)
+                                val_losses.append(loss.detach().cpu())
+                                for key, value in self._get_last_metrics(policy).items():
+                                    val_metrics.setdefault(key, []).append(value)
                                 if (
                                     cfg.train_config.training_params.max_val_steps
                                     is not None
@@ -335,12 +385,18 @@ class DefaultRunner(BaseRunner):
                                 ):
                                     break
                         if len(val_losses) > 0:
-                            val_loss = torch.mean(torch.tensor(val_losses)).item()
+                            val_loss = torch.stack(val_losses).mean().item()
                             # log epoch average validation loss
                             step_log["val_loss"] = val_loss
+                            for key, values in val_metrics.items():
+                                step_log[f"val_{key}"] = float(np.mean(values))
 
-                # Latent space visualization for A2A policy
-                if hasattr(policy, 'get_latents_for_visualization'):
+                # Latent space visualization is expensive and writes many files.
+                # Keep it opt-in by setting train_config.training_params.enable_latent_viz=True.
+                enable_latent_viz = OmegaConf.select(
+                    cfg, "train_config.training_params.enable_latent_viz", default=False
+                )
+                if enable_latent_viz and hasattr(policy, 'get_latents_for_visualization'):
                     try:
                         with torch.no_grad():
                             # Collect latents from multiple validation batches
@@ -389,8 +445,13 @@ class DefaultRunner(BaseRunner):
                             wandb_metrics = {
                                 "latent/avg_tsne_distance": viz_results['avg_tsne_distance'],
                             }
-                            if 'flow_end_to_target_dist' in viz_results:
-                                wandb_metrics["latent/flow_end_to_target_dist"] = viz_results['flow_end_to_target_dist']
+                            for metric_name in (
+                                "flow_start_to_target_dist",
+                                "flow_end_to_target_dist",
+                                "flow_improvement",
+                            ):
+                                if metric_name in viz_results:
+                                    wandb_metrics[f"latent/{metric_name}"] = viz_results[metric_name]
                             if wandb_run is not None:
                                 wandb_run.log(wandb_metrics, step=self.global_step)
                     except Exception as e:
@@ -430,15 +491,23 @@ class DefaultRunner(BaseRunner):
                 if (
                     (self.epoch + 1) % cfg.train_config.training_params.checkpoint_every
                 ) == 0 or self.epoch + 1 >= cfg.train_config.training_params.num_epochs:
-                    # checkpointing
-                    save_name = pathlib.Path(self.cfg.dataset_config.zarr_path).stem
-                    self.save_checkpoint(
-                        cfg.checkpoint.save_root_dir
-                        + f"/checkpoints/{self.epoch + 1}.ckpt"
-                    )  # TODO
+                    if self._saving_thread is not None and self._saving_thread.is_alive():
+                        self._saving_thread.join()
+
+                    ckpt_dir = pathlib.Path(cfg.checkpoint.save_root_dir) / "checkpoints"
+                    ckpt_path = ckpt_dir / f"{self.epoch + 1}.ckpt"
+                    self.save_checkpoint(str(ckpt_path), use_thread=False)
+
+                    keep_last_only = OmegaConf.select(
+                        cfg, "checkpoint.keep_last_ckpt_only", default=True
+                    )
+                    if keep_last_only:
+                        for old_ckpt in ckpt_dir.glob("*.ckpt"):
+                            if old_ckpt != ckpt_path and old_ckpt.stem.isdigit():
+                                old_ckpt.unlink(missing_ok=True)
 
                 # ========= eval end for this epoch ==========
-                policy.train()
+                self.model.train()
 
                 # end of epoch
                 # log of last step is combined with validation and rollout
@@ -574,7 +643,9 @@ class DefaultRunner(BaseRunner):
             )
         args.checkpoint_path = pathlib.Path(checkpoint)
         ckpt_name = args.checkpoint_path.name + "_" + time_str
-        ckpt_name = f"{args.task}/{self.policy_name}/{args.robot}/{ckpt_name}"
+        eval_seed_label = dr_seed if dr_seed is not None else "none"
+        eval_context = f"randomization_level_{dr_level}/scene_{dr_scene_mode}/seed_{eval_seed_label}"
+        ckpt_name = f"{args.task}/{self.policy_name}/{args.robot}/{eval_context}/{ckpt_name}"
 
         from roboverse_learn.il.runners.default_eval_runner import DefaultEvalRunner
 

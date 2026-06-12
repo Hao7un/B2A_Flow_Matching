@@ -40,7 +40,7 @@ def plot_latent_paired_tsne(
     Generate t-SNE visualization with lines connecting paired history-future latents.
     
     Args:
-        history_latents: (N, D) array of history state latents
+        history_latents: (N, D) array of flow source latents
         future_latents: (N, D) array of future action latents
         epoch: Current training epoch (for title)
         save_path: Path to save the figure
@@ -100,7 +100,7 @@ def plot_latent_paired_tsne(
     # Plot points on top (larger size)
     ax.scatter(
         history_embedded[:, 0], history_embedded[:, 1],
-        c='#3498db', alpha=0.9, s=120, label='History Latents',
+        c='#3498db', alpha=0.9, s=120, label='Source Latents',
         edgecolors='white', linewidths=1.0, zorder=2
     )
     ax.scatter(
@@ -112,7 +112,7 @@ def plot_latent_paired_tsne(
     # Styling (2x larger fonts, title unchanged)
     # ax.set_xlabel('t-SNE Dimension 1', fontsize=56)
     # ax.set_ylabel('t-SNE Dimension 2', fontsize=56)
-    # ax.set_title(f'A2A Paired Latent Space (Epoch {epoch})', fontsize=32)
+    # ax.set_title(f'Paired Source-Target Latent Space (Epoch {epoch})', fontsize=32)
     ax.legend(loc='lower right', fontsize=48, markerscale=2.0)
     ax.grid(True, alpha=0.3)
     ax.tick_params(axis='both', labelsize=44)
@@ -155,7 +155,7 @@ def plot_density_contour(
     Generate density contour plot showing overlap of history and future latent distributions.
     
     Args:
-        history_latents: (N, D) array of history state latents
+        history_latents: (N, D) array of flow source latents
         future_latents: (N, D) array of future action latents
         epoch: Current training epoch (for title)
         save_path: Path to save the figure
@@ -236,7 +236,7 @@ def plot_density_contour(
     
     # Add scatter points with low alpha for reference
     ax.scatter(history_embedded[:, 0], history_embedded[:, 1],
-               c='#3498db', alpha=0.3, s=15, label='History Latents')
+               c='#3498db', alpha=0.3, s=15, label='Source Latents')
     ax.scatter(future_embedded[:, 0], future_embedded[:, 1],
                c='#e74c3c', alpha=0.3, s=15, label='Future Latents')
     
@@ -299,10 +299,14 @@ def plot_flow_trajectories(
     num_steps = trajectories[0].shape[0] - 1  # Exclude initial point
     latent_dim = trajectories[0].shape[1]
     
-    # Calculate distance in ORIGINAL latent space (not t-SNE space)
-    # This gives a consistent metric across epochs
-    flow_end_latents = np.array([traj[-1] for traj in trajectories])  # (n_samples, latent_dim)
-    latent_space_dist = np.mean(np.linalg.norm(flow_end_latents - future_latents, axis=1))
+    # Calculate distances in ORIGINAL latent space (not t-SNE space).
+    # These values are comparable across epochs and tell whether the flow
+    # actually improves the source relative to the target.
+    flow_start_latents = np.array([traj[0] for traj in trajectories])
+    flow_end_latents = np.array([traj[-1] for traj in trajectories])
+    start_to_target_dist = np.mean(np.linalg.norm(flow_start_latents - future_latents, axis=1))
+    end_to_target_dist = np.mean(np.linalg.norm(flow_end_latents - future_latents, axis=1))
+    flow_improvement = start_to_target_dist - end_to_target_dist
     
     # Combine all trajectory points and targets for joint t-SNE
     all_points = []
@@ -366,7 +370,7 @@ def plot_flow_trajectories(
     # Plot start points (history) - larger
     start_mask = point_labels == 0
     ax.scatter(embedded[start_mask, 0], embedded[start_mask, 1],
-               c='#3498db', s=300, marker='o', label='Start (History)',
+               c='#3498db', s=300, marker='o', label='Start (Source)',
                edgecolors='black', linewidths=2.0, zorder=5)
     
     # Plot end points (flow result) - larger
@@ -392,7 +396,7 @@ def plot_flow_trajectories(
     # Styling (2x larger fonts, title unchanged)
     ax.set_xlabel('t-SNE Dimension 1', fontsize=56)
     ax.set_ylabel('t-SNE Dimension 2', fontsize=56)
-    ax.set_title(f'A2A Flow Trajectories (Epoch {epoch})', fontsize=32)
+    ax.set_title(f'Flow Trajectories (Epoch {epoch})', fontsize=32)
     ax.legend(loc='lower right', fontsize=48, markerscale=1.5)
     ax.tick_params(axis='both', labelsize=44)
     ax.grid(True, alpha=0.3)
@@ -401,7 +405,9 @@ def plot_flow_trajectories(
     ax.text(
         0.02, 0.98, 
         f'{n_samples} samples, {num_steps} flow steps\n'
-        f'Latent Space Distance = {latent_space_dist:.2f}',
+        f'Start->Target = {start_to_target_dist:.2f}\n'
+        f'End->Target = {end_to_target_dist:.2f}\n'
+        f'Improvement = {flow_improvement:+.2f}',
         transform=ax.transAxes, fontsize=48,
         verticalalignment='top', # fontfamily='Times New Roman',
         bbox=dict(boxstyle='round', facecolor='wheat', alpha=0.7)
@@ -415,7 +421,7 @@ def plot_flow_trajectories(
     plt.savefig(save_path, dpi=150, bbox_inches='tight')
     plt.close(fig)
     
-    return str(save_path), latent_space_dist
+    return str(save_path), start_to_target_dist, end_to_target_dist
 
 
 def plot_all_latent_visualizations(
@@ -432,7 +438,7 @@ def plot_all_latent_visualizations(
     Generate all visualization types for A2A latent analysis.
     
     Args:
-        history_latents: (N, D) array of history state latents
+        history_latents: (N, D) array of flow source latents
         future_latents: (N, D) array of future action latents
         epoch: Current training epoch
         save_dir: Directory to save figures
@@ -459,11 +465,13 @@ def plot_all_latent_visualizations(
     # 2. Flow trajectories (if provided)
     if trajectories is not None and trajectory_targets is not None:
         traj_path = save_dir / f"epoch_{epoch:02d}_flow_trajectories.png"
-        _, end_to_target_dist = plot_flow_trajectories(
+        _, start_to_target_dist, end_to_target_dist = plot_flow_trajectories(
             trajectories, trajectory_targets, epoch, str(traj_path),
             perplexity=perplexity, random_state=random_state
         )
         results['flow_trajectories'] = str(traj_path)
+        results['flow_start_to_target_dist'] = start_to_target_dist
         results['flow_end_to_target_dist'] = end_to_target_dist
+        results['flow_improvement'] = start_to_target_dist - end_to_target_dist
     
     return results

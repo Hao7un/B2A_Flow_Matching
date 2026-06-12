@@ -86,6 +86,8 @@ class DefaultEvalRunner(BaseEvalRunner):
     def reset(self):
         self.obs.clear()
         super().reset()
+        if hasattr(self.policy, "reset"):
+            self.policy.reset()
 
     def update_obs(self, current_obs):
         self.obs.append(current_obs)

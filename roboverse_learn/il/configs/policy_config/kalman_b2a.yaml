@@ -1,0 +1,17 @@
+# Kalman Belief-to-Action Flow Matching Policy
+# Structured posterior source: history prior x visual innovation likelihood.
+
+defaults:
+  - b2a
+  - _self_
+
+_target_: roboverse_learn.il.policies.a2a.kalman_b2a_policy.KalmanB2AImagePolicy
+
+# V0 by default; set belief_use_prev_latent=true for recursive posterior fusion.
+belief_use_prev_latent: false
+
+# Component uncertainty initialization. With equal component stds, the initial
+# posterior mean is exactly history_latents and posterior std is std / sqrt(2).
+kalman_prior_log_std_init: -1.5
+kalman_visual_log_std_init: -1.5
+kalman_innovation_gate_init: -2.0

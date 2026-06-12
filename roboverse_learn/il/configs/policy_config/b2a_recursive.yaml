@@ -1,0 +1,8 @@
+# Recursive Belief-to-Action Flow Matching Policy (B2A V1)
+# Same as B2A V0, but conditions the belief source on the previous predicted latent.
+
+defaults:
+  - b2a
+  - _self_
+
+belief_use_prev_latent: true

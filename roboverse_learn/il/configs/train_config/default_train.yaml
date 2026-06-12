@@ -15,9 +15,10 @@ training_params:
   # training loop control
   # in epochs
   rollout_every: 50
-  checkpoint_every: 50
+  checkpoint_every: 100
   val_every: 5
   sample_every: 5
+  enable_latent_viz: False
   # steps per epoch
   max_train_steps: 250
   max_val_steps: 250

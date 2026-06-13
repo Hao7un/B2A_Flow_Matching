@@ -451,6 +451,92 @@ class B2AImagePolicy(BaseImagePolicy):
 
         return {"action": action, "action_pred": action_pred}
 
+    @torch.no_grad()
+    def eval_belief_diagnostics(self, batch):
+        """Open-loop error decomposition against ground-truth actions.
+
+        Mirrors predict_action's inference path (deterministic_eval +
+        source_noise) but uses the batch's GT future actions to split the
+        policy's action error into three additive parts:
+            decoder floor      = decode(true target latent) vs GT action
+            belief contribution= decode(belief mu) - decoder floor
+            flow contribution  = decode(flow output) - decode(belief mu)
+        Run on train vs held-out splits to read each component's
+        generalization gap. All errors are means over batch x horizon x dim.
+        """
+        nobs = self.normalizer.normalize(batch["obs"])
+        nactions = self.normalizer["action"].normalize(batch["action"])
+        batch_size = nactions.shape[0]
+
+        obs_latents = self._encode_obs_latents(nobs, batch_size)
+        history_states = nobs["agent_pos"][:, : self.n_obs_steps, :]
+        history_latents = self.history_action_encoder(history_states)
+
+        future_start = self.n_obs_steps - 1
+        future_end = future_start + self.n_action_steps
+        future_actions = nactions[:, future_start:future_end, :]
+        target_latents = self.action_encoder(future_actions)
+
+        # Belief mean (the point estimate) and the actual eval-time source,
+        # both built without seeing the future, exactly as predict_action does.
+        belief_mu, _ = self._build_belief_start(
+            history_latents=history_latents,
+            obs_latents=obs_latents,
+            deterministic=True,
+        )
+        eval_source, belief_stats = self._build_belief_start(
+            history_latents=history_latents,
+            obs_latents=obs_latents,
+            deterministic=self.deterministic_eval,
+        )
+        if self.source_noise_std > 0:
+            eval_source = eval_source + self.source_noise_std * torch.randn_like(eval_source)
+
+        flow_out = self.flow_matcher.sample(
+            self.flow_net,
+            shape=(batch_size, self.latent_dim),
+            device=obs_latents.device,
+            num_steps=self.num_sampling_steps,
+            start=eval_source,
+            global_cond=obs_latents,
+            return_traces=False,
+        )
+
+        action_unnorm = self.normalizer["action"].unnormalize
+        future_actions_raw = action_unnorm(future_actions)
+
+        def action_l1(latent):
+            dec = self.action_decoder(latent)
+            l1_norm = (dec - future_actions).abs().mean()
+            l1_raw = (action_unnorm(dec) - future_actions_raw).abs().mean()
+            return l1_norm, l1_raw
+
+        mu_l1n, mu_l1r = action_l1(belief_mu)
+        tgt_l1n, tgt_l1r = action_l1(target_latents)
+        flow_l1n, flow_l1r = action_l1(flow_out)
+
+        def latent_mse(a):
+            return ((a - target_latents) ** 2).mean()
+
+        return {
+            "n": float(batch_size),
+            # latent-space squared distance to the true target latent
+            "belief_mu_target_mse": latent_mse(belief_mu).item(),
+            "source_target_mse": latent_mse(eval_source).item(),
+            "flow_target_mse": latent_mse(flow_out).item(),
+            # action-space L1, normalized units (comparable to training losses)
+            "decode_target_l1": tgt_l1n.item(),
+            "decode_mu_l1": mu_l1n.item(),
+            "decode_flow_l1": flow_l1n.item(),
+            # action-space L1, raw action units (real joint-space magnitude)
+            "decode_target_l1_raw": tgt_l1r.item(),
+            "decode_mu_l1_raw": mu_l1r.item(),
+            "decode_flow_l1_raw": flow_l1r.item(),
+            # belief internals at eval
+            "belief_avg_std": belief_stats["std"].mean().item(),
+            "belief_gate": belief_stats["gate"].mean().item(),
+        }
+
     def reset_belief(self):
         self.prev_action_latents = None
 
